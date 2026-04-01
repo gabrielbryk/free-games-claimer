@@ -1,10 +1,12 @@
 // import { firefox } from 'playwright-firefox';
 import { chromium } from 'patchright';
-import { datetime, filenamify, prompt, handleSIGINT } from './src/util.js';
-import { cfg } from './src/config.js';
+import { datetime, filenamify, prompt, handleSIGINT } from './src/util.ts';
+import { cfg } from './src/config.ts';
 
 // can probably be removed and hard-code headers for mobile view
+// @ts-expect-error untyped third-party module
 import { FingerprintInjector } from 'fingerprint-injector';
+// @ts-expect-error untyped third-party module
 import { FingerprintGenerator } from 'fingerprint-generator';
 
 const { fingerprint, headers } = new FingerprintGenerator().getFingerprint({
@@ -41,7 +43,7 @@ context.setDefaultTimeout(cfg.debug ? 0 : cfg.timeout);
 
 const page = context.pages().length ? context.pages()[0] : await context.newPage(); // should always exist
 
-const auth = async url => {
+const auth = async (url: string) => {
   console.log('auth', url);
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   // no longer redirects if not authed, but replaces content -> click button "Log in" which then redirects
@@ -54,7 +56,7 @@ const auth = async url => {
     // and try automated
     await loginBtn.click();
     page.getByRole('button', { name: 'Accept cookies' }).click().then(_ => console.log('Accepted cookies')).catch(_ => { });
-    page.locator('span:has-text("Switch account")').click().catch(_ => {}); // sometimes no longer logged in, but previous user/email is pre-selected -> in this case we want to go back to the classic login
+    page.locator('span:has-text("Switch account")').click().catch(_ => {});  // sometimes no longer logged in, but previous user/email is pre-selected -> in this case we want to go back to the classic login
     const login = page.locator('#root'); // not universal: .content, .nfm-login
     const email = cfg.ae_email || await prompt({ message: 'Enter email' });
     const emailInput = login.locator('input[label="Email or phone number"]');
@@ -75,7 +77,7 @@ const auth = async url => {
 };
 
 // copied URLs from AliExpress app on tablet which has menu for the used webview
-const urls = {
+const urls: Record<string, string> = {
   // only work with mobile view:
   coins: 'https://m.aliexpress.com/p/coin-index/index.html',
   grow: 'https://m.aliexpress.com/p/ae_fruit/index.html', // firefox: stuck at 60% loading, chrome: loads, but canvas
@@ -86,18 +88,18 @@ const urls = {
 };
 
 // need to start to wait for responses from API already before auth()
-const pre_auth = {
+const pre_auth: Record<string, (() => Promise<void>)> = {
   coins: async _ => {
     console.log('Checking coins...');
-    let userCoinsNum; // can make this global or pass as arg if needed; for now we just log the value
-    let d; // response data (log in case of exception)
+    let userCoinsNum: string | undefined; // can make this global or pass as arg if needed; for now we just log the value
+    let d: any; // response data (log in case of exception)
     // coins are only present as rotating digits in DOM -> no easy way to get value
     // number of coins are retrieved via POST to https://acs.aliexpress.com/h5/mtop.aliexpress.coin.execute/1.0/?jsv=2.6.1&appKey=...&t=1753253986320&sign=...&api=mtop.aliexpress.coin.execute&v=1.0&post=1&type=originaljson&dataType=jsonp -> .data.data.find(d => d.name == 'userCoinsNum').value
     // however, there are two requests with same method/URL (usually the first is what we need, but sometimes it comes second) which only differ in the opaque value of the sign URL param
     await page.waitForResponse(r => r.request().method() == 'POST' && r.url().startsWith('https://acs.aliexpress.com/h5/mtop.aliexpress.coin.execute/')).then(async r => {
       d = await r.json();
       d = d.data.data;
-      if (Array.isArray(d)) userCoinsNum = d.find(e => e.name == 'userCoinsNum')?.value;
+      if (Array.isArray(d)) userCoinsNum = d.find((e: any) => e.name == 'userCoinsNum')?.value;
       console.log('Total (coins):', userCoinsNum);
     }).catch(e => console.error('Total (coins): error:', e, 'data:', d));
   },

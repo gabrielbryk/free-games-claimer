@@ -6,10 +6,11 @@ import { chromium } from 'patchright';
 import { authenticator } from 'otplib';
 import path from 'path';
 import { writeFileSync } from 'fs';
-import { resolve, jsonDb, datetime, filenamify, prompt, notify, html_game_list, handleSIGINT } from './src/util.js';
-import { cfg } from './src/config.js';
+import { resolve, jsonDb, datetime, filenamify, prompt, notify, html_game_list, handleSIGINT } from './src/util.ts';
+import { cfg } from './src/config.ts';
+import type { NotifyGame } from './src/types.ts';
 
-const screenshot = (...a) => resolve(cfg.dir.screenshots, 'unrealengine', ...a);
+const screenshot = (...a: string[]) => resolve(cfg.dir.screenshots, 'unrealengine', ...a);
 
 const URL_CLAIM = 'https://www.unrealengine.com/marketplace/en-US/assets?count=20&sortBy=effectiveDate&sortDir=DESC&start=0&tag=4910';
 const URL_LOGIN = 'https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true&redirectUrl=' + URL_CLAIM;
@@ -40,8 +41,8 @@ const page = context.pages().length ? context.pages()[0] : await context.newPage
 await page.setViewportSize({ width: cfg.width, height: cfg.height }); // TODO workaround for https://github.com/vogler/free-games-claimer/issues/277 until Playwright fixes it
 // console.debug('userAgent:', await page.evaluate(() => navigator.userAgent));
 
-const notify_games = [];
-let user;
+const notify_games: NotifyGame[] = [];
+let user: string | undefined;
 
 try {
   await context.addCookies([{ name: 'OptanonAlertBoxClosed', value: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(), domain: '.epicgames.com', path: '/' }]); // Accept cookies to get rid of banner to save space on screen. Set accept time to 5 days ago.
@@ -74,7 +75,7 @@ try {
       page.waitForURL('**/id/login/mfa**').then(async () => {
         console.log('Enter the security code to continue - This appears to be a new device, browser or location. A security code has been sent to your email address at ...');
         // TODO locator for text (email or app?)
-        const otp = cfg.eg_otpkey && authenticator.generate(cfg.eg_otpkey) || await prompt({ type: 'text', message: 'Enter two-factor sign in code', validate: n => n.toString().length == 6 || 'The code must be 6 digits!' }); // can't use type: 'number' since it strips away leading zeros and codes sometimes have them
+        const otp = cfg.eg_otpkey && authenticator.generate(cfg.eg_otpkey) || await prompt({ type: 'text', message: 'Enter two-factor sign in code', validate: (n: string) => n.toString().length == 6 || 'The code must be 6 digits!' }); // can't use type: 'number' since it strips away leading zeros and codes sometimes have them
         await page.locator('input[name="code-input-0"]').pressSequentially(otp.toString());
         await page.click('button[type="submit"]');
       }).catch(_ => { });
@@ -91,24 +92,24 @@ try {
     if (!cfg.debug) context.setDefaultTimeout(cfg.timeout);
   }
   await page.waitForTimeout(1000);
-  user = await page.locator('unrealengine-navigation').getAttribute('displayname'); // 'null' if !isloggedin
+  user = await page.locator('unrealengine-navigation').getAttribute('displayname') as string; // 'null' if !isloggedin
   console.log(`Signed in as ${user}`);
   db.data[user] ||= {};
 
   page.locator('button:has-text("Accept All Cookies")').click().catch(_ => { });
 
-  const ids = [];
+  const ids: string[] = [];
   for (const p of await page.locator('article.asset').all()) {
     const link = p.locator('h3 a');
     const title = await link.innerText();
     const url = 'https://www.unrealengine.com' + await link.getAttribute('href');
     console.log([title, url]);
-    const id = url.split('/').pop();
+    const id = url.split('/').pop()!;
     db.data[user][id] ||= { title, time: datetime(), url, status: 'failed' }; // this will be set on the initial run only!
-    const notify_game = { title, url, status: 'failed' };
+    const notify_game: NotifyGame = { title, url, status: 'failed' };
     notify_games.push(notify_game); // status is updated below
     // if (await p.locator('.btn .add-review-btn').count()) { // did not work
-    if ((await p.getAttribute('class')).includes('asset--owned')) {
+    if ((await p.getAttribute('class'))!.includes('asset--owned')) {
       console.log('  ↳ Already claimed');
       if (db.data[user][id].status != 'claimed') {
         db.data[user][id].status = 'existed';
@@ -195,7 +196,7 @@ try {
   process.exitCode ||= 1;
   console.error('--- Exception:');
   console.error(error); // .toString()?
-  if (error.message && process.exitCode != 130) notify(`unrealengine failed: ${error.message.split('\n')[0]}`);
+  if ((error as Error).message && process.exitCode != 130) notify(`unrealengine failed: ${(error as Error).message.split('\n')[0]}`);
 } finally {
   await db.write(); // write out json db
   if (notify_games.filter(g => g.status != 'existed').length) { // don't notify if all were already claimed

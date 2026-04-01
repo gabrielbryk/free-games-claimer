@@ -1,25 +1,22 @@
 {
   "name": "free-games-claimer",
-  "version": "1.4.0",
+  "version": "2.0.0",
   "description": "Automatically claims free games on the Epic Games Store, Amazon Prime Gaming and GOG.",
-  "homepage": "https://github.com/vogler/free-games-claimer",
+  "homepage": "https://github.com/gabrielbryk/free-games-claimer",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vogler/free-games-claimer.git"
+    "url": "https://github.com/gabrielbryk/free-games-claimer.git"
   },
-  "author": "Ralf Vogler",
   "license": "AGPL-3.0-only",
-  "main": "index.js",
-  "scripts": {
-    "lint": "npx eslint .",
-    "docker:build": "docker build . -t ghcr.io/vogler/free-games-claimer",
-    "docker:build-log": "(docker buildx build --progress=plain . -t ghcr.io/vogler/free-games-claimer; docker image ls) 2>&1 | tee data/docker-build.log",
-    "docker": "docker run --rm -it -p 6080:6080 -v fgc:/fgc/data --pull=always ghcr.io/vogler/free-games-claimer",
-    "deps:update": "npx taze major -w && npm i"
-  },
   "type": "module",
-  "engines": {
-    "node": ">=17"
+  "scripts": {
+    "epic": "bun run epic-games.ts",
+    "gog": "bun run gog.ts",
+    "prime": "bun run prime-gaming.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit",
+    "lint": "bunx eslint .",
+    "docker:build": "docker build . -t ghcr.io/gabrielbryk/free-games-claimer"
   },
   "dependencies": {
     "chalk": "^5.4.1",
@@ -31,6 +28,9 @@
     "patchright": "^1.52.5"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
+    "bun-types": "^1.3.0",
+    "typescript": "^5.7.0",
     "@stylistic/eslint-plugin": "^5.2.2",
     "eslint": "^9.31.0"
   }

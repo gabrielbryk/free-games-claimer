@@ -1,11 +1,17 @@
-import { existsSync } from 'fs';
+import { existsSync } from 'node:fs';
 import { Low } from 'lowdb';
 import { JSONFile } from 'lowdb/node';
-import { datetime } from './util.js';
+import { datetime } from './util.ts';
 
-const datetime_UTCtoLocalTimezone = async file => {
+interface MigrateData {
+  [user: string]: {
+    [game: string]: { time: string; [key: string]: unknown };
+  };
+}
+
+const datetime_UTCtoLocalTimezone = async (file: string) => {
   if (!existsSync(file)) return console.error('File does not exist:', file);
-  const db = new Low(new JSONFile(file));
+  const db = new Low<MigrateData>(new JSONFile(file), {});
   await db.read();
   db.data ||= {};
   console.log('Migrating', file);
@@ -18,8 +24,7 @@ const datetime_UTCtoLocalTimezone = async file => {
       db.data[user][game].time = time2;
     }
   }
-  // console.log(db.data);
-  await db.write(); // write out json db
+  await db.write();
 };
 
 const args = process.argv.slice(2);
@@ -28,6 +33,5 @@ if (args[0] == 'localtime') {
   console.log('Will convert UTC datetime to local timezone for', files);
   files.forEach(datetime_UTCtoLocalTimezone);
 } else {
-  console.log('Usage: node migrate.js <cmd> <args>');
-  console.log('       node migrate.js localtime data/*.json');
+  console.log('Usage: bun run src/migrate.ts localtime data/*.json');
 }

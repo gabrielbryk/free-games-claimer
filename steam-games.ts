@@ -1,11 +1,11 @@
 // import { firefox } from 'playwright-firefox';
 import { chromium } from 'patchright';
-import { datetime, filenamify, jsonDb, prompt } from './src/util.js';
-import { cfg } from './src/config.js';
+import { datetime, filenamify, jsonDb, prompt } from './src/util.ts';
+import { cfg } from './src/config.ts';
 
 const db = await jsonDb('steam-games.json', {});
 
-const user = cfg.steam_id || await prompt({ message: 'Enter Steam community id ("View my profile", then copy from URL)' });
+const user = (cfg as any).steam_id || process.env.STEAM_ID || await prompt({ message: 'Enter Steam community id ("View my profile", then copy from URL)' });
 
 const context = await chromium.launchPersistentContext(cfg.dir.browser, {
   headless: cfg.headless,
@@ -33,7 +33,7 @@ try {
   console.log('All Games:', await games.count());
   for (const game of await games.all()) {
     const title = await game.locator('span a').innerText();
-    let time, last, achievements, size;
+    let time: string | undefined, last: string | undefined, achievements: string[] | undefined, size: string | undefined;
     const ltime = game.locator('span:has-text("total played")');
     if (await ltime.count()) time = (await ltime.first().innerText()).split('\n')[1];
     const llast = game.locator('span:has-text("last played")');

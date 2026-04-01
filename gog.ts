@@ -1,10 +1,11 @@
 // import { firefox } from 'playwright-firefox';
 import { chromium } from 'patchright';
 import chalk from 'chalk';
-import { resolve, jsonDb, datetime, filenamify, prompt, confirm, notify, html_game_list, handleSIGINT } from './src/util.js';
-import { cfg } from './src/config.js';
+import { resolve, jsonDb, datetime, filenamify, prompt, confirm, notify, html_game_list, handleSIGINT } from './src/util.ts';
+import { cfg } from './src/config.ts';
+import type { NotifyGame } from './src/types.ts';
 
-const screenshot = (...a) => resolve(cfg.dir.screenshots, 'gog', ...a);
+const screenshot = (...a: string[]) => resolve(cfg.dir.screenshots, 'gog', ...a);
 
 const URL_CLAIM = 'https://www.gog.com/en';
 
@@ -39,8 +40,8 @@ const page = context.pages().length ? context.pages()[0] : await context.newPage
 await page.setViewportSize({ width: cfg.width, height: cfg.height }); // TODO workaround for https://github.com/vogler/free-games-claimer/issues/277 until Playwright fixes it
 // console.debug('userAgent:', await page.evaluate(() => navigator.userAgent));
 
-const notify_games = [];
-let user;
+const notify_games: NotifyGame[] = [];
+let user: string | undefined;
 
 try {
   await context.addCookies([{ name: 'CookieConsent', value: '{stamp:%274oR8MJL+bxVlG6g+kl2we5+suMJ+Tv7I4C5d4k+YY4vrnhCD+P23RQ==%27%2Cnecessary:true%2Cpreferences:true%2Cstatistics:true%2Cmarketing:true%2Cmethod:%27explicit%27%2Cver:1%2Cutc:1672331618201%2Cregion:%27de%27}', domain: 'www.gog.com', path: '/' }]); // to not waste screen space when non-headless
@@ -78,7 +79,7 @@ try {
       iframe.locator('form[name=second_step_authentication]').waitFor().then(async () => {
         console.log('Two-Step Verification - Enter security code');
         console.log(await iframe.locator('.form__description').innerText());
-        const otp = await prompt({ type: 'text', message: 'Enter two-factor sign in code', validate: n => n.toString().length == 4 || 'The code must be 4 digits!' }); // can't use type: 'number' since it strips away leading zeros and codes sometimes have them
+        const otp = await prompt({ type: 'text', message: 'Enter two-factor sign in code', validate: (n: string) => n.toString().length == 4 || 'The code must be 4 digits!' }); // can't use type: 'number' since it strips away leading zeros and codes sometimes have them
         await iframe.locator('#second_step_authentication_token_letter_1').pressSequentially(otp.toString(), { delay: 10 });
         await iframe.locator('#second_step_authentication_send').click();
         await page.waitForTimeout(1000); // TODO still needed with wait for username below?
@@ -103,7 +104,7 @@ try {
     await page.waitForSelector('#menuUsername');
     if (!cfg.debug) context.setDefaultTimeout(cfg.timeout);
   }
-  user = await page.locator('#menuUsername').first().textContent(); // innerText is uppercase due to styling!
+  user = await page.locator('#menuUsername').first().textContent() as string; // innerText is uppercase due to styling!
   console.log(`Signed in as ${user}`);
   db.data[user] ||= {};
 
@@ -113,9 +114,9 @@ try {
     console.log('Currently no free giveaway!');
   } else {
     const text = await page.locator('.giveaway__content-header').innerText();
-    const match_all = text.match(/Claim (.*) and don't miss the|Success! (.*) was added to/);
+    const match_all = text.match(/Claim (.*) and don't miss the|Success! (.*) was added to/)!;
     const title = match_all[1] ? match_all[1] : match_all[2];
-    const url = await banner.locator('a').first().getAttribute('href');
+    const url = await banner.locator('a').first().getAttribute('href') as string;
     console.log(`Current free game: ${chalk.blue(title)} - ${url}`);
     db.data[user][title] ||= { title, time: datetime(), url };
     if (cfg.dryrun) process.exit(1);
@@ -132,7 +133,7 @@ try {
     // {"message":"Already claimed"}
     // {"message":"Unauthorized"}
     // {"message":"Giveaway has ended"}
-    let status;
+    let status: string;
     if (response == '{}') {
       status = 'claimed';
       console.log('  Claimed successfully!');
@@ -160,7 +161,7 @@ try {
   process.exitCode ||= 1;
   console.error('--- Exception:');
   console.error(error); // .toString()?
-  if (error.message && process.exitCode != 130) notify(`gog failed: ${error.message.split('\n')[0]}`);
+  if ((error as Error).message && process.exitCode != 130) notify(`gog failed: ${(error as Error).message.split('\n')[0]}`);
 } finally {
   await db.write(); // write out json db
   if (notify_games.filter(g => g.status != 'existed').length) { // don't notify if all were already claimed

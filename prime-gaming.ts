@@ -19,14 +19,16 @@ const db = await jsonDb('prime-gaming.json', {});
 
 // https://playwright.dev/docs/auth#multi-factor-authentication
 const context = await chromium.launchPersistentContext(cfg.dir.browser, {
-  headless: cfg.headless,
+  headless: false, // must be non-headless with patchright to avoid captcha detection
   viewport: { width: cfg.width, height: cfg.height },
-  locale: 'en-US', // ignore OS locale to be sure to have english text for locators
-  recordVideo: cfg.record ? { dir: 'data/record/', size: { width: cfg.width, height: cfg.height } } : undefined, // will record a .webm video for each page navigated; without size, video would be scaled down to fit 800x800
-  recordHar: cfg.record ? { path: `data/record/pg-${filenamify(datetime())}.har` } : undefined, // will record a HAR file with network requests and responses; can be imported in Chrome devtools
-  handleSIGINT: false, // have to handle ourselves and call context.close(), otherwise recordings from above won't be saved
+  locale: 'en-US',
+  recordVideo: cfg.record ? { dir: 'data/record/', size: { width: cfg.width, height: cfg.height } } : undefined,
+  recordHar: cfg.record ? { path: `data/record/pg-${filenamify(datetime())}.har` } : undefined,
+  handleSIGINT: false,
   args: [
     '--hide-crash-restore-bubble',
+    '--ignore-gpu-blocklist',
+    '--enable-unsafe-webgpu',
   ],
 });
 
@@ -43,14 +45,27 @@ let user: string | undefined;
 
 try {
   await page.goto(URL_CLAIM, { waitUntil: 'domcontentloaded' }); // default 'load' takes forever
-  // need to wait for some elements to exist before checking if signed in or accepting cookies:
-  await Promise.any(['button:has-text("Sign in")', '[data-a-target="user-dropdown-first-name-text"]'].map(s => page.waitForSelector(s)));
-  page.click('[aria-label="Cookies usage disclaimer banner"] button:has-text("Accept Cookies")').catch(_ => { }); // to not waste screen space when non-headless, TODO does not work reliably, need to wait for something else first?
+  // Wait for the page to settle — either signed in or sign-in button visible
+  await Promise.race([
+    page.locator('button:has-text("Sign in")').waitFor({ timeout: 20000 }),
+    page.locator('[data-a-target="user-dropdown-first-name-text"]').waitFor({ timeout: 20000 }),
+    page.waitForTimeout(10000), // fallback: just wait 10s if neither appears quickly
+  ]).catch(() => {});
+  page.click('[aria-label="Cookies usage disclaimer banner"] button:has-text("Accept Cookies")').catch(_ => { });
   while (await page.locator('button:has-text("Sign in")').count() > 0) {
-    console.error('Not signed in anymore.');
-    if (cfg.nowait) process.exit(1);
+    console.error('Not signed in to Prime Gaming.');
+    if (cfg.nowait) {
+      console.error('NOWAIT=1, exiting.');
+      await context.close();
+      process.exit(1);
+    }
+    if (!cfg.pg_email || !cfg.pg_password) {
+      console.error('PG_EMAIL and/or PG_PASSWORD not set. Please add them to data/config.env.');
+      await context.close();
+      process.exit(1);
+    }
     await page.click('button:has-text("Sign in")');
-    if (!cfg.debug) context.setDefaultTimeout(cfg.login_timeout); // give user some extra time to log in
+    if (!cfg.debug) context.setDefaultTimeout(cfg.login_timeout);
     console.info(`Login timeout is ${cfg.login_timeout / 1000} seconds!`);
     if (cfg.pg_email && cfg.pg_password) console.info('Using email and password from environment.');
     else console.info('Press ESC to skip the prompts if you want to login in the browser (not possible in headless mode).');
@@ -63,7 +78,7 @@ try {
       // await page.check('[name=rememberMe]'); // no longer exists
       await page.click('input[type="submit"]');
       page.waitForURL('**/ap/signin**').then(async () => { // check for wrong credentials
-        const error = await page.locator('.a-alert-content').first().innerText();
+        const error = await page.locator('.a-alert-content').nth(0).innerText();
         if (!error.trim.length) return;
         console.error('Login error:', error);
         await notify(`prime-gaming: login: ${error}`);
@@ -87,10 +102,10 @@ try {
         process.exit(1);
       }
     }
-    await page.waitForURL(`${BASE_URL}/claims/home?signedIn=true`);
+    await page.waitForURL(url => url.toString().includes('luna.amazon.com') && !url.toString().includes('/ap/signin'));
     if (!cfg.debug) context.setDefaultTimeout(cfg.timeout);
   }
-  user = await page.locator('[data-a-target="user-dropdown-first-name-text"]').first().innerText();
+  user = await page.locator('[data-a-target="user-dropdown-first-name-text"]').nth(0).innerText();
   console.log(`Signed in as ${user}`);
   // await page.click('button[aria-label="User dropdown and more options"]');
   // const twitch = await page.locator('[data-a-target="TwitchDisplayName"]').first().innerText();
@@ -124,6 +139,7 @@ try {
     await page.waitForTimeout(3000);
   });
 
+  await page.locator('button[data-type="Game"]').waitFor({ timeout: 15000 });
   await page.click('button[data-type="Game"]');
   const games = page.locator('div[data-a-target="offer-list-FGWP_FULL"]');
   await games.waitFor();
@@ -178,7 +194,7 @@ try {
   const external_info: Array<{ title: string, url: string }> = [];
   for (const card of external) { // need to get data incl. URLs in this loop and then navigate in another, otherwise .all() would update after coming back and .elementHandles() like above would lead to error due to page navigation: elementHandle.$: Protocol error (Page.adoptNode)
     const title = await card.locator('.item-card-details__body__primary').innerText();
-    const slug = await card.locator('a:has-text("Claim")').first().getAttribute('href');
+    const slug = await card.locator('a:has-text("Claim")').nth(0).getAttribute('href');
     const url = BASE_URL + slug!.split('?')[0];
     // await (await card.$('text=Claim')).click(); // goes to URL of game, no need to wait
     external_info.push({ title, url });
@@ -186,10 +202,19 @@ try {
   // external_info = [ { title: 'Fallout 76 (XBOX)', url: 'https://gaming.amazon.com/fallout-76-xbox-fgwp/dp/amzn1.pg.item.9fe17d7b-b6c2-4f58-b494-cc4e79528d0b?ingress=amzn&ref_=SM_Fallout76XBOX_S01_FGWP_CRWN' } ];
   for (const { title, url } of external_info) {
     console.log('Current free game:', chalk.blue(title)); // , url);
+    try {
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     if (cfg.debug) await page.pause();
-    const item_text = await page.innerText('[data-a-target="DescriptionItemDetails"]');
-    const store = item_text.toLowerCase().replace(/.* on /, '').slice(0, -1);
+    let store = 'unknown';
+    try {
+      const item_text = await page.innerText('[data-a-target="DescriptionItemDetails"]', { timeout: 10000 });
+      store = item_text.toLowerCase().replace(/.* on /, '').slice(0, -1);
+    } catch {
+      // Try alternative: check for store info in any visible description text
+      const bodyText = await page.locator('.item-detail-page, [data-a-target="ItemDetailSection"]').innerText().catch(() => '');
+      const storeMatch = bodyText.toLowerCase().match(/on (epic games store|gog\.com|microsoft store|legacy games|origin|xbox)/);
+      if (storeMatch) store = storeMatch[1];
+    }
     console.log('  External store:', store);
     if (cfg.pg_timeLeft && await skipBasedOnTime(url)) continue;
     if (cfg.dryrun) continue;
@@ -354,9 +379,17 @@ try {
       // console.info('  Saved a screenshot of page to', p);
     }
     // await page.pause();
+    } catch (error) {
+      console.error(`  Failed to process ${title}:`, (error as Error).message?.split('\n')[0]);
+      notify_games.push({ title, url, status: 'failed' });
+      // Wait for any pending navigations to settle before continuing
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+      await page.waitForTimeout(2000);
+    }
   }
-  await page.goto(URL_CLAIM, { waitUntil: 'domcontentloaded' });
-  await page.click('button[data-type="Game"]');
+  await page.goto(URL_CLAIM, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  await page.locator('button[data-type="Game"]').waitFor({ timeout: 15000 }).catch(() => {});
+  await page.click('button[data-type="Game"]').catch(() => {});
 
   if (notify_games.length) { // make screenshot of all games if something was claimed
     const p = screenshot(`${filenamify(datetime())}.png`);
@@ -384,7 +417,7 @@ try {
     const dlcs = await Promise.all(cards.map(async card => ({
       game: await card.locator('.item-card-details__body p').innerText(),
       title: await card.locator('.item-card-details__body__primary').innerText(),
-      url: BASE_URL + await card.locator('a').first().getAttribute('href'),
+      url: BASE_URL + await card.locator('a').nth(0).getAttribute('href'),
     })));
     // console.log(dlcs);
 
@@ -408,7 +441,7 @@ try {
         const linkAccountButton = page.locator('[data-a-target="LinkAccountButton"]');
         let unlinked_store: string | undefined;
         if (await linkAccountButton.count()) {
-          unlinked_store = await linkAccountButton.first().getAttribute('aria-label') as string;
+          unlinked_store = await linkAccountButton.nth(0).getAttribute('aria-label') as string;
           console.debug('  LinkAccountButton label:', unlinked_store);
           const match = unlinked_store.match(/Link (.*) account/);
           if (match && match.length == 2) unlinked_store = match[1];

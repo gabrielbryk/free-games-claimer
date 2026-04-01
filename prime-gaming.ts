@@ -223,8 +223,15 @@ try {
     db.data[user][title] ||= { title, time: datetime(), url, store };
     const notify_game: NotifyGame = { title, url, status: '' };
     notify_games.push(notify_game); // status is updated below
-    if (await page.locator('div:has-text("Link game account")').count() // TODO still needed? epic games store just has 'Link account' as the button text now.
-       || await page.locator('div:has-text("Link account")').count()) {
+    // Check for success first — "Collected" or success indicators take priority over "Link account" text
+    const successText = await page.locator('.thank-you-title, :text-is("Success"), :text-is("Collected")').count().catch(() => 0);
+    // Only check for account linking if there's a specific modal or button, not just any div containing the text
+    const linkRequired = !successText && (
+      await page.locator('[data-a-target="LinkAccountModal"]').count().catch(() => 0) > 0
+      || await page.locator('button:has-text("Link account")').count().catch(() => 0) > 0
+      || await page.locator('[data-a-target="LinkAccountButton"]').count().catch(() => 0) > 0
+    );
+    if (linkRequired) {
       console.error('  Account linking is required to claim this offer!');
       notify_game.status = `failed: need account linking for ${store}`;
       db.data[user][title].status = 'failed: need account linking';

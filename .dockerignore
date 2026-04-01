@@ -2,6 +2,7 @@ node_modules/
 data/
 *.env
 megalinter-reports/
+dist/
 
 # the above is just copied from .gitignore - violating DRY...
 # however, generally, we want .dockerignore to be a *strict* superset of .gitignore, so we can't just `ln -s .gitignore .dockerignore`

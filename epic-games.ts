@@ -69,13 +69,24 @@ try {
     { name: 'HasAcceptedAgeGates', value: 'USK:9007199254740991,general:18,EPIC SUGGESTED RATING:18', domain: 'store.epicgames.com', path: '/' }, // gets rid of 'To continue, please provide your date of birth', https://github.com/vogler/free-games-claimer/issues/275, USK number doesn't seem to matter, cookie from 'Fallout 3: Game of the Year Edition'
   ]);
 
-  await page.goto(URL_CLAIM, { waitUntil: 'domcontentloaded' }); // 'domcontentloaded' faster than default 'load' https://playwright.dev/docs/api/class-page#page-goto
+  // Navigate with Cloudflare retry logic
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await page.goto(URL_CLAIM, { waitUntil: 'domcontentloaded' });
+    // Check for Cloudflare challenge
+    if (await page.locator('#challenge-running, #challenge-stage').count() > 0) {
+      console.log(`Cloudflare challenge detected (attempt ${attempt}/3), waiting...`);
+      await page.waitForURL(URL_CLAIM, { timeout: 30000 }).catch(() => {});
+      if (await page.locator('#challenge-running, #challenge-stage').count() === 0) break;
+      if (attempt < 3) await page.waitForTimeout(5000 * attempt);
+    } else {
+      break;
+    }
+  }
 
   if (cfg.time) console.timeEnd('startup');
   if (cfg.time) console.time('login');
 
-  // page.click('button:has-text("Accept All Cookies")').catch(_ => { }); // Not needed anymore since we set the cookie above. Clicking this did not always work since the message was animated in too slowly.
-  page.locator('button:has-text("Continue")').click().catch(_ => { }); // already logged in, but need to accept updated "Epic Games Privacy Policy"
+  page.locator('button:has-text("Continue")').click().catch(_ => { }); // accept updated "Epic Games Privacy Policy"
 
   while (await page.locator('egs-navigation').getAttribute('isloggedin') != 'true') {
     console.error('Not signed in anymore. Please login in the browser or here in the terminal.');
@@ -212,11 +223,23 @@ try {
 
     let title: string;
     let bundle_includes: string[] | undefined;
-    if (await page.locator('span:text-is("About Bundle")').count()) {
-      title = (await page.locator('span:has-text("Buy"):left-of([data-testid="purchase-cta-button"])').first().innerText()).replace('Buy ', '');
-      // h1 first didn't exist for bundles but now it does... However h1 would e.g. be 'Fallout® Classic Collection' instead of 'Fallout Classic Collection'
+    const isBundle = await page.locator('span:text-is("About Bundle")').count() > 0;
+    if (isBundle) {
+      // Try h1 first (now works for bundles), fall back to the fragile "Buy" span locator
+      title = await page.locator('h1').first().innerText().catch(() => '') ||
+        await page.locator('span:has-text("Buy"):left-of([data-testid="purchase-cta-button"])').first().innerText().then(t => t.replace('Buy ', '')).catch(() => 'Unknown Bundle');
       try {
-        bundle_includes = await Promise.all((await page.locator('.product-card-top-row h5').all()).map(b => b.innerText()));
+        // Try multiple selectors for bundle contents — Epic changes these periodically
+        const items = await page.locator('.product-card-top-row h5').all();
+        if (items.length) {
+          bundle_includes = await Promise.all(items.map(b => b.innerText()));
+        } else {
+          // Fallback: try any h5 inside bundle section
+          const altItems = await page.locator('[data-testid="bundle-includes"] h5, .bundle-includes h5').all();
+          if (altItems.length) {
+            bundle_includes = await Promise.all(altItems.map(b => b.innerText()));
+          }
+        }
       } catch (e) {
         console.error('Failed to get "Bundle Includes":', e);
       }
@@ -241,13 +264,16 @@ try {
       console.log('  Requires base game! Nothing to claim.');
       notify_game.status = 'requires base game';
       db.data[user][game_id].status ||= 'failed:requires-base-game';
-      // TODO claim base game if it is free
-      const baseUrl = 'https://store.epicgames.com' + await page.locator('a:has-text("Overview")').getAttribute('href');
-      console.log('  Base game:', baseUrl);
-      // await page.click('a:has-text("Overview")');
-      // TODO handle this via function call for base game above since this will never terminate if DRYRUN=1
-      urls.push(baseUrl); // add base game to the list of games to claim
-      urls.push(url); // add add-on itself again
+      const baseHref = await page.locator('a:has-text("Overview")').getAttribute('href').catch(() => null);
+      if (baseHref && !cfg.dryrun) {
+        const baseUrl = 'https://store.epicgames.com' + baseHref;
+        console.log('  Base game:', baseUrl);
+        // Only add base game if we haven't already tried it (prevent infinite loop)
+        if (!urls.includes(baseUrl)) {
+          urls.push(baseUrl);
+          urls.push(url); // retry add-on after claiming base
+        }
+      }
     } else { // GET
       console.log('  Not in library yet! Click', btnText);
       await purchaseBtn.click({ delay: 11 }); // got stuck here without delay (or mouse move), see #75, 1ms was also enough
@@ -259,12 +285,12 @@ try {
       page.click('button:has-text("Yes, buy now")').catch(_ => { });
 
       // Accept End User License Agreement (only needed once)
-      page.locator(':has-text("end user license agreement")').waitFor().then(async () => {
+      page.locator('text=/end user license agreement/i').waitFor({ timeout: 5000 }).then(async () => {
         console.log('  Accept End User License Agreement (only needed once)');
-        console.log(page.innerHTML);
-        console.log('Please report the HTML above here: https://github.com/vogler/free-games-claimer/issues/371');
-        await page.locator('input#agree').check(); // TODO Bundle: got stuck here; likely unrelated to bundle and locator just changed: https://github.com/vogler/free-games-claimer/issues/371
-        await page.locator('button:has-text("Accept")').click();
+        // Try multiple checkbox selectors — Epic changes these
+        const checkbox = page.locator('input#agree, input[type="checkbox"][name*="agree"], input[type="checkbox"]').first();
+        await checkbox.check().catch(() => console.error('  Could not find EULA checkbox'));
+        await page.locator('button:has-text("Accept")').click().catch(() => console.error('  Could not find Accept button'));
       }).catch(_ => { });
 
       // it then creates an iframe for the purchase

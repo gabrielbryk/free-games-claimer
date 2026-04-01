@@ -20,15 +20,16 @@ if (cfg.width < 1280) { // otherwise 'Sign in' and #menuUsername are hidden (but
 
 // https://playwright.dev/docs/auth#multi-factor-authentication
 const context = await chromium.launchPersistentContext(cfg.dir.browser, {
-  headless: cfg.headless,
+  headless: false, // must be non-headless with patchright to avoid captcha detection
   viewport: { width: cfg.width, height: cfg.height },
-  locale: 'en-US', // ignore OS locale to be sure to have english text for locators -> done via /en in URL
-  recordVideo: cfg.record ? { dir: 'data/record/', size: { width: cfg.width, height: cfg.height } } : undefined, // will record a .webm video for each page navigated; without size, video would be scaled down to fit 800x800
-  recordHar: cfg.record ? { path: `data/record/gog-${filenamify(datetime())}.har` } : undefined, // will record a HAR file with network requests and responses; can be imported in Chrome devtools
-  handleSIGINT: false, // have to handle ourselves and call context.close(), otherwise recordings from above won't be saved
-  // https://peter.sh/experiments/chromium-command-line-switches/
+  locale: 'en-US',
+  recordVideo: cfg.record ? { dir: 'data/record/', size: { width: cfg.width, height: cfg.height } } : undefined,
+  recordHar: cfg.record ? { path: `data/record/gog-${filenamify(datetime())}.har` } : undefined,
+  handleSIGINT: false,
   args: [
     '--hide-crash-restore-bubble',
+    '--ignore-gpu-blocklist',
+    '--enable-unsafe-webgpu',
   ],
 });
 
@@ -48,15 +49,29 @@ try {
 
   await page.goto(URL_CLAIM, { waitUntil: 'domcontentloaded' }); // default 'load' takes forever
 
-  // page.click('#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll').catch(_ => { }); // does not work reliably, solved by setting CookieConsent above
-  const signIn = page.locator('a:has-text("Sign in")').first();
-  // TODO for the below signIn.waitFor(), patchright failed most of the time with: locator.waitFor: JSHandles can be evaluated only in the context they were created!
-  // await Promise.any([signIn.waitFor(), page.waitForSelector('#menuUsername')]);
-  const username = page.locator('#menuUsername').first();
-  while (await signIn.isVisible() && !await username.isVisible()) {
-    console.error('Not signed!');
-    if (cfg.nowait) process.exit(1);
-    await signIn.click();
+  // Wait for either the account menu (signed in) or the sign-in button
+  const loginIndicator = await Promise.race([
+    page.waitForSelector('[hook-test="menuAccountSignOut"]', { timeout: 15000 }).then(() => 'signed-in' as const),
+    page.waitForSelector('[hook-test="menuAnonymousButton"]', { timeout: 15000 }).then(() => 'sign-in' as const),
+  ]).catch(() => 'unknown' as const);
+
+  while (loginIndicator !== 'signed-in' && !await page.locator('[hook-test="menuAccountSignOut"]').count().then(c => c > 0).catch(() => false)) {
+    if (loginIndicator === 'unknown') {
+      console.error('Could not detect login state on GOG page. The page may have changed.');
+      break;
+    }
+    console.error('Not signed in to GOG.');
+    if (cfg.nowait) {
+      console.error('NOWAIT=1, exiting.');
+      await context.close();
+      process.exit(1);
+    }
+    if (!cfg.gog_email || !cfg.gog_password) {
+      console.error('GOG_EMAIL and/or GOG_PASSWORD not set. Please add them to data/config.env.');
+      await context.close();
+      process.exit(1);
+    }
+    await page.locator('[hook-test="menuAnonymousButton"]').click();
     // it then creates an iframe for the login
     await page.waitForSelector('#GalaxyAccountsFrameContainer iframe'); // TODO needed?
     const iframe = page.frameLocator('#GalaxyAccountsFrameContainer iframe');
@@ -91,7 +106,7 @@ try {
         notify('gog: got captcha during login. Please check.');
         // TODO solve reCAPTCHA?
       }).catch(_ => { });
-      await page.waitForSelector('#menuUsername');
+      await page.waitForSelector('[hook-test="menuAccountSignOut"]');
     } else {
       console.log('Waiting for you to login in the browser.');
       await notify('gog: no longer signed in and not enough options set for automatic login.');
@@ -101,10 +116,14 @@ try {
         process.exit(1);
       }
     }
-    await page.waitForSelector('#menuUsername');
+    await page.waitForSelector('[hook-test="menuAccountSignOut"]');
     if (!cfg.debug) context.setDefaultTimeout(cfg.timeout);
   }
-  user = await page.locator('#menuUsername').first().textContent() as string; // innerText is uppercase due to styling!
+  // Extract username from the account menu — GOG embeds it in the menuAccount element
+  user = await page.locator('[hook-test="menuAccount"]').evaluate(el => {
+    // The username text is a direct text node after the button child
+    return el.textContent?.match(/Your account\s*(.+?)Activity/s)?.[1]?.trim() || 'unknown';
+  });
   console.log(`Signed in as ${user}`);
   db.data[user] ||= {};
 
